@@ -6,6 +6,16 @@
 #include "proc.h"
 #include "defs.h"
 
+int time_slice[] = {4, 8, 16, 32}; // time_slices
+int beg0 = 0, beg1 = 0, beg2 = 0, beg3 = 0; //use beg,end as circullar buffer pointers
+int end0 = 0, end1 = 0, end2 = 0, end3 = 0; // this allows 0(1) add/removal
+int time_age = 10;
+int cnt[] = {0,0,0,0}; // count of processes in each queue
+struct proc *q0[NPROC];
+struct proc *q1[NPROC];
+struct proc *q2[NPROC];
+struct proc *q3[NPROC];
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -413,6 +423,41 @@ kwait(uint64 addr)
     sleep(p, &wait_lock);  //DOC: wait-sleep
   }
 }
+int
+set_priority(int pid,int priority){
+  struct proc *p;
+  int val = -1; // in order to return old priority of the process
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    if(p && p->pid == pid){
+        val = p->priority;
+        p->priority = priority;
+        printf("set priority of %d to %d\n", p->pid, p->priority);
+        release(&p->lock);
+        break;
+    }
+    release(&p->lock);
+  }
+  return val;
+}
+int
+check_priority(int prt){
+  struct proc *p;
+  for(p = proc; p < &proc[NPROC]; p++){
+      acquire(&p->lock);
+      if(p->state != RUNNABLE){
+        release(&p->lock);
+        continue;
+      }
+
+      if(p->priority <= prt){
+        release(&p->lock);
+        return 1;
+      }
+      release(&p->lock);
+  }
+  return 0;
+}
 
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
@@ -436,7 +481,7 @@ scheduler(void)
     // and wfi.
     intr_on();
     intr_off();
-
+#ifndef MLFQ
     int found = 0;
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
@@ -459,6 +504,92 @@ scheduler(void)
       // nothing to run; stop running on this core until an interrupt.
       asm volatile("wfi");
     }
+#endif
+
+  #ifdef MLFQ
+    int procfound = 0;
+    //first priority queue
+    if(!procfound){
+      for(int i = 0; i < cnt[0]; i++){
+        p = q0[i];
+        acquire(&p->lock);
+        if(p->state != RUNNABLE){
+          release(&p->lock);
+          continue;
+        }
+        beg0 = i;
+        p->state = RUNNING;
+        c->proc = p;
+        swtch(&c->context,&p->context);
+        c->proc = 0;
+        release(&p->lock);
+        procfound = 1;
+        break;
+        
+      }
+    }
+    //second priority queue
+    if(!procfound){
+      for(int i = 0; i < cnt[1]; i++){
+        p = q1[i];
+        acquire(&p->lock);
+        if(p->state != RUNNABLE){
+          release(&p->lock);
+          continue;
+        }
+        beg1 = i;
+        c->proc = p;
+        p->state = RUNNING;
+        swtch(&c->context,&p->context);
+        c->proc = 0;
+        release(&p->lock);
+        procfound = 1;
+        break;
+      }
+    }
+    //third priority queue
+    if(!procfound){
+      for(int i = 0; i < cnt[2]; i++){
+        p = q2[i];
+        acquire(&p->lock);
+        if(p->state != RUNNABLE){
+          release(&p->lock);
+          continue;
+        }
+        beg2 = i;
+        c->proc = p;
+        p->state = RUNNING;
+        swtch(&c->context, &p->context);
+        c->proc = 0;
+        release(&p->lock);
+        procfound = 1;
+        break;
+      }
+    }
+    //fourth queue
+    if(!procfound){
+      for(int i = 0; i < cnt[3]; i++){
+        p = q3[i];
+        acquire(&p->lock);
+        if(p->state != RUNNABLE){
+          release(&p->lock);
+          continue;
+        }
+        beg3 = i;
+        c->proc = p;
+        p->state = RUNNING;
+        swtch(&c->context,&p->context);
+        c->proc = 0;
+        release(&p->lock);
+        procfound = 1;
+        break;
+      }
+    }
+    if(!procfound){
+      asm volatile("wfi"); // if no process found in any queue cpu should sleep
+    }
+    
+    #endif
   }
 }
 

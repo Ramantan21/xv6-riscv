@@ -122,7 +122,6 @@ sys_getpinfo(void)
   int i = 0;
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
-    // i = p - proc; // get the idx
     if(p->state == UNUSED){
       release(&p->lock);
       continue;

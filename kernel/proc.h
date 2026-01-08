@@ -104,4 +104,8 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  int qno;                     // current queue for priority
+  int rrtime[4];               // ticks used at each level
+  int ctime, rtime, etime, iotime; // start, running and end time
+  int priority;
 };
