@@ -131,6 +131,8 @@ sys_getpinfo(void)
       ps.state[i] = p->state;
       ps.size[i] = p->sz;
       memmove(ps.name[i],p->name,16); // copy the name string
+      ps.priority[i] = p->qno;
+      for(int q = 0; q < 4; q++) ps.ticks[i][q] = p->ticks_total[q];
       i++;
     }
     release(&p->lock);

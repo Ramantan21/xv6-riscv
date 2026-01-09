@@ -7,14 +7,11 @@
 #include "defs.h"
 
 int time_slice[] = {4, 8, 16, 32}; // time_slices
-int beg0 = 0, beg1 = 0, beg2 = 0, beg3 = 0; //use beg,end as circullar buffer pointers
-int end0 = 0, end1 = 0, end2 = 0, end3 = 0; // this allows 0(1) add/removal
-int time_age = 10;
-int cnt[] = {0,0,0,0}; // count of processes in each queue
-struct proc *q0[NPROC];
-struct proc *q1[NPROC];
-struct proc *q2[NPROC];
-struct proc *q3[NPROC];
+// int cnt[] = {0,0,0,0}; // count of processes in each queue
+// // struct proc *q0[NPROC];
+// // struct proc *q1[NPROC];
+// // struct proc *q2[NPROC];
+// // struct proc *q3[NPROC];
 
 struct cpu cpus[NCPU];
 
@@ -35,6 +32,7 @@ extern char trampoline[]; // trampoline.S
 // memory model when using p->parent.
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
+
 
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
@@ -134,6 +132,14 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+#ifdef MLFQ
+  p->qno = 0; // add process to queue 0
+  p->ticks_used = 0;
+  p->wait_ticks = 0;
+  for(int i = 0; i < 4; i++){
+    p->ticks_total[i] = 0;
+  }
+#endif
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -423,41 +429,6 @@ kwait(uint64 addr)
     sleep(p, &wait_lock);  //DOC: wait-sleep
   }
 }
-int
-set_priority(int pid,int priority){
-  struct proc *p;
-  int val = -1; // in order to return old priority of the process
-  for(p = proc; p < &proc[NPROC]; p++){
-    acquire(&p->lock);
-    if(p && p->pid == pid){
-        val = p->priority;
-        p->priority = priority;
-        printf("set priority of %d to %d\n", p->pid, p->priority);
-        release(&p->lock);
-        break;
-    }
-    release(&p->lock);
-  }
-  return val;
-}
-int
-check_priority(int prt){
-  struct proc *p;
-  for(p = proc; p < &proc[NPROC]; p++){
-      acquire(&p->lock);
-      if(p->state != RUNNABLE){
-        release(&p->lock);
-        continue;
-      }
-
-      if(p->priority <= prt){
-        release(&p->lock);
-        return 1;
-      }
-      release(&p->lock);
-  }
-  return 0;
-}
 
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
@@ -505,94 +476,52 @@ scheduler(void)
       asm volatile("wfi");
     }
 #endif
+#ifdef MLFQ
+    // struct proc **queues[] = {q0,q1,q2,q3};
+    int found = 0;
+    //update aging for all RUNNABLE in lower queues
+    for(p = proc; p < &proc[NPROC]; p++){
+      if(p->state == RUNNABLE && p->qno >0){
+        p->wait_ticks++;
+        if(p->wait_ticks >= 10 * time_slice[p->qno]){
+          p->qno--;
+          p->ticks_used = 0;
+          p->wait_ticks = 0;
+        }
+      }
+    }
+    // find the run the highest priorit RUNNABLE
+    for(int qnum = 0; qnum < 4 && !found; qnum++){
+      for(p = proc; p < &proc[NPROC]; p++){
+        acquire(&p->lock);
+        if(p->state == RUNNABLE && p->qno == qnum){
+          p->state = RUNNING;
+          p->wait_ticks = 0;
+          c->proc = p;
 
-  #ifdef MLFQ
-    int procfound = 0;
-    //first priority queue
-    if(!procfound){
-      for(int i = 0; i < cnt[0]; i++){
-        p = q0[i];
-        acquire(&p->lock);
-        if(p->state != RUNNABLE){
+          swtch(&c->context,&p->context);
+
+          c->proc = 0;
+          p->ticks_used++;
+          p->ticks_total[p->qno]++;
+
+          if(p->ticks_used >= time_slice[p->qno] && p->qno < 3){
+            p->qno++;
+            p->ticks_used = 0;
+          }else if(p->qno == 3 && p->ticks_used >= time_slice[3]){
+            p->ticks_used = 0;
+          }
           release(&p->lock);
-          continue;
+          found = 1;
+          break;
         }
-        beg0 = i;
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context,&p->context);
-        c->proc = 0;
         release(&p->lock);
-        procfound = 1;
-        break;
-        
       }
     }
-    //second priority queue
-    if(!procfound){
-      for(int i = 0; i < cnt[1]; i++){
-        p = q1[i];
-        acquire(&p->lock);
-        if(p->state != RUNNABLE){
-          release(&p->lock);
-          continue;
-        }
-        beg1 = i;
-        c->proc = p;
-        p->state = RUNNING;
-        swtch(&c->context,&p->context);
-        c->proc = 0;
-        release(&p->lock);
-        procfound = 1;
-        break;
-      }
-    }
-    //third priority queue
-    if(!procfound){
-      for(int i = 0; i < cnt[2]; i++){
-        p = q2[i];
-        acquire(&p->lock);
-        if(p->state != RUNNABLE){
-          release(&p->lock);
-          continue;
-        }
-        beg2 = i;
-        c->proc = p;
-        p->state = RUNNING;
-        swtch(&c->context, &p->context);
-        c->proc = 0;
-        release(&p->lock);
-        procfound = 1;
-        break;
-      }
-    }
-    //fourth queue
-    if(!procfound){
-      for(int i = 0; i < cnt[3]; i++){
-        p = q3[i];
-        acquire(&p->lock);
-        if(p->state != RUNNABLE){
-          release(&p->lock);
-          continue;
-        }
-        beg3 = i;
-        c->proc = p;
-        p->state = RUNNING;
-        swtch(&c->context,&p->context);
-        c->proc = 0;
-        release(&p->lock);
-        procfound = 1;
-        break;
-      }
-    }
-    if(!procfound){
-      asm volatile("wfi"); // if no process found in any queue cpu should sleep
-    }
-    
-    #endif
+    if(!found)  asm volatile("wfi");
+  #endif
   }
 }
-
 // Switch to scheduler.  Must hold only p->lock
 // and have changed proc->state. Saves and restores
 // intena because intena is a property of this
@@ -711,6 +640,24 @@ wakeup(void *chan)
       acquire(&p->lock);
       if(p->state == SLEEPING && p->chan == chan) {
         p->state = RUNNABLE;
+// #ifdef MLFQ
+//         if(p->qno == 0){
+//           q0[cnt[0]] = p;
+//           cnt[0]++;
+//          }
+//         else if(p->qno == 1){
+//           q1[cnt[1]] = p;
+//           cnt[1]++;
+//         }
+//         else if(p->qno == 2){
+//           q2[cnt[2]] = p;
+//           cnt[2]++;
+//         }
+//         else if(p->qno == 3){
+//           q3[cnt[3]] = p;
+//           cnt[3]++;
+//         }
+// #endif
       }
       release(&p->lock);
     }

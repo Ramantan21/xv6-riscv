@@ -105,7 +105,7 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
   int qno;                     // current queue for priority
-  int rrtime[4];               // ticks used at each level
-  int ctime, rtime, etime, iotime; // start, running and end time
-  int priority;
+  int ticks_total[4];          // ticks used at each level
+  int ticks_used;              // tracks current time slice progress 
+  int wait_ticks;              //added aging_Time to avoid starvation for process with low priority
 };
